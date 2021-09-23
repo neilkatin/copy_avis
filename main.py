@@ -93,10 +93,9 @@ def open_child(folder, child_name):
     return sub_folder
 
 def process_avis_folder(source_folder, dest_parent):
-    name = source_folder.name
+    folder_name = source_folder.name
 
-
-    query = dest_parent.new_query().on_attribute('name').equals(name)
+    query = dest_parent.new_query().on_attribute('name').equals(folder_name)
     
     dest_children = dest_parent.get_items(query=query)
     #log.debug(f"dest_children { dest_children }")
@@ -105,7 +104,7 @@ def process_avis_folder(source_folder, dest_parent):
         dest_folder = f
 
     if dest_folder is None:
-        dest_folder = dest_parent.create_child_folder(name)
+        dest_folder = dest_parent.create_child_folder(folder_name)
 
     log.debug(f"dest_folder { dest_folder }")
 
@@ -123,10 +122,92 @@ def process_avis_folder(source_folder, dest_parent):
 
         #log.debug(f"checking item { name }")
 
-        # see if it exists in the destination
+        # only process if the name isn't already in the destination folder
         if name not in dest_cache:
             log.debug(f"copying '{ name }'")
-            item.copy(target=dest_folder, name=name)
+
+            if name.endswith('.xlsx') and not folder_name.startswith("FY19") and not folder_name.startswith("FY20"):
+
+                # process the spreadsheet
+                bytesio = io.BytesIO()
+                if not item.download(output=bytesio):
+                    log.error(f"download of { name } failed")
+                else:
+
+                    try:
+                        wb = openpyxl.load_workbook(bytesio)
+                        bytesio.close()
+                        #log.debug(f"sheetnames { wb.sheetnames }")
+
+                        modify_avis(wb)
+
+                        bytesio = io.BytesIO()
+                        zipbuffer = zipfile.ZipFile(bytesio, mode='w')
+                        writer = openpyxl.writer.excel.ExcelWriter(wb, zipbuffer)
+                        writer.save()
+
+                        # get the file size
+                        buffer_data = bytesio.getvalue()
+                        buffer_size = len(buffer_data)
+                        #log.debug(f"buffer size is { buffer_size }")
+
+                        # go back to the beginning
+                        bytesio.seek(io.SEEK_SET, 0)
+
+                        # upload the file into sharepoint
+                        dest_folder.upload_file(None, item_name=name, stream=bytesio, stream_size=buffer_size, upload_in_chunks=False, conflict_handling="fail")
+                    except:
+                        # something went wrong; just copy the file
+                        log.info(f"transforming file { name } failed; copying instead")
+                        item.copy(target=dest_folder, name=name)
+            else:
+                # just copy untouched
+                item.copy(target=dest_folder, name=name)
+
+        # end of test for name being in output folder already
+    # end if item loop
+
+
+
+
+def modify_avis(wb):
+    
+
+    sheet_names = wb.sheetnames
+
+    for sheet_name in sheet_names:
+        modify_avis_sheet(wb[sheet_name], sheet_name)
+
+
+def modify_avis_sheet(ws, sheet_name):
+
+    table_name = sheet_name.replace(' ', '_')
+
+    if sheet_name == 'Open RA':
+        start = '$B$3'
+        freeze = 'B4'
+    elif sheet_name == 'Closed RA':
+        start = '$A$6'
+        freeze = 'A7'
+    else:
+        log.error(f"modify_avis_sheet: unknown sheet name '{ sheet_name }': can't process")
+        return
+
+    ws.freeze_panes = freeze
+
+    max_rows = ws.max_row
+    max_cols = ws.max_column
+    last_col_letter = openpyxl.utils.get_column_letter(max_cols)
+    table_ref = f"{ start }:${ last_col_letter }${ max_rows }"
+
+    #log.debug(f"table_ref is '{ table_ref }'")
+    table = openpyxl.worksheet.table.Table(displayName=table_name, ref=table_ref)
+    ws.add_table(table)
+
+
+
+
+
 
 
 
